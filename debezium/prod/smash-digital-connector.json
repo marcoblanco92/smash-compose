@@ -1,0 +1,42 @@
+{
+  "name": "smash-digital-connector",
+  "config": {
+    "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+    "tasks.max": "1",
+
+    "database.hostname": "smash_postgres",
+    "database.port": "5432",
+    "database.user": "smash_repl",
+    "database.password": "smash_repl",
+    "database.dbname": "smash",
+
+    "topic.prefix": "smash",
+    "schema.include.list": "smash_own",
+
+    "plugin.name": "pgoutput",
+    "publication.name": "smash_debezium",
+    "publication.autocreate.mode": "disabled",
+
+    "slot.name": "debezium_digital",
+
+    "table.include.list": "smash_own.app_events",
+
+    "key.converter": "org.apache.kafka.connect.json.JsonConverter",
+    "key.converter.schemas.enable": false,
+    "value.converter": "org.apache.kafka.connect.json.JsonConverter",
+    "value.converter.schemas.enable": false,
+
+    "snapshot.mode": "initial",
+
+    "heartbeat.interval.ms": "10000",
+    "tombstones.on.delete": true,
+
+    "decimal.handling.mode": "double",
+    "time.precision.mode": "connect",
+
+    "topic.creation.enable": true,
+
+    "topic.creation.default.replication.factor": 1,
+    "topic.creation.default.partitions": 24
+  }
+}

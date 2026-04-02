@@ -1,0 +1,27 @@
+<clickhouse>
+    <storage_configuration>
+        <disks>
+            <!-- Hot: usa il disco default di ClickHouse (già configurato internamente) -->
+            <!-- Non ridefinire /var/lib/clickhouse/ — usa 'default' direttamente -->
+
+            <!-- Cold: volume separato montato nel compose -->
+            <cold_disk>
+                <type>local</type>
+                <path>/var/lib/clickhouse/cold/</path>
+            </cold_disk>
+        </disks>
+        <policies>
+            <smash_tiered>
+                <volumes>
+                    <hot>
+                        <disk>default</disk>
+                    </hot>
+                    <cold>
+                        <disk>cold_disk</disk>
+                    </cold>
+                </volumes>
+                <move_factor>0.2</move_factor>
+            </smash_tiered>
+        </policies>
+    </storage_configuration>
+</clickhouse>

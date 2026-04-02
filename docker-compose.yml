@@ -1,0 +1,369 @@
+# ============================================================
+# Real-Time Event Mesh — POC
+# Stack: PostgreSQL 17 · Kafka KRaft · Flink · Kafka Connect (Debezium)
+#        ClickHouse 24.x (OLAP baseline w30/w90/w180/w365)
+#        Hazelcast 5.x (cache baseline → Flink hot path)
+# Schema Registry: commentato — da riabilitare in POC finale
+# Network: event_smash
+# Arch: linux/arm64 (Apple M4)
+# ============================================================
+
+# Ordine di avvio:
+# 1. postgres + kafka (paralleli)
+# 2. kafka-ui + clickhouse + hazelcast (dipendono da kafka)
+# 3. flink-jobmanager + flink-taskmanager
+# 4. kafka-connect / Debezium (dipende da tutti)
+
+services:
+
+  # ----------------------------------------------------------
+  # POSTGRES 17
+  # wal_level=logical obbligatorio per Debezium CDC
+  # ----------------------------------------------------------
+  postgres:
+    image: postgres:17
+    platform: linux/arm64
+    container_name: smash_postgres
+    restart: unless-stopped
+    command:
+      - "postgres"
+      - "-c"
+      - "wal_level=logical"
+      - "-c"
+      - "max_replication_slots=10"
+      - "-c"
+      - "max_wal_senders=10"
+      - "-c"
+      - "shared_preload_libraries=pgoutput"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres_root_pwd
+      POSTGRES_DB: smash
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+    networks:
+      - event_smash
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d smash"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # ----------------------------------------------------------
+  # KAFKA 3.7 — modalità KRaft (no Zookeeper)
+  # ----------------------------------------------------------
+  kafka:
+    image: confluentinc/cp-kafka:7.6.1
+    platform: linux/arm64
+    container_name: smash_kafka
+    restart: unless-stopped
+    ports:
+      - "9092:9092"
+      - "9101:9101"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: >-
+        CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: >-
+        PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENERS: >-
+        PLAINTEXT://kafka:29092,CONTROLLER://kafka:29093,PLAINTEXT_HOST://0.0.0.0:9092
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: "1@kafka:29093"
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_JMX_PORT: 9101
+      KAFKA_JMX_HOSTNAME: localhost
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      CLUSTER_ID: "MkU3OEVBNTcwNTJENDM2Qk"
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    networks:
+      - event_smash
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:9092"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  # ----------------------------------------------------------
+  # KAFKA UI
+  # Accesso: http://localhost:8090
+  # ----------------------------------------------------------
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    platform: linux/arm64
+    container_name: smash_kafka_ui
+    restart: unless-stopped
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8090:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: smash-cluster
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+    networks:
+      - event_smash
+
+  # ----------------------------------------------------------
+  # CLICKHOUSE 24.x — OLAP baseline w30/w90/w365
+  #
+  # Ruolo: consuma da Kafka (Opzione A — disaccoppiato da Flink)
+  #        calcola baseline per cliente in modo incrementale
+  #        pubblica su topic customer.baselines
+  #
+  # Accesso HTTP: http://localhost:8123
+  # Accesso TCP:  localhost:9000
+  # Play UI:      http://localhost:8123/play
+  # ----------------------------------------------------------
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.3
+    platform: linux/arm64
+    container_name: smash_clickhouse
+    restart: unless-stopped
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    environment:
+      CLICKHOUSE_DB: smash_olap
+      CLICKHOUSE_USER: smash_olap_user
+      CLICKHOUSE_PASSWORD: smash_olap_pwd
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+      - clickhouse_cold:/var/lib/clickhouse/cold
+      - ./clickhouse/config:/etc/clickhouse-server/config.d:ro
+      - ./clickhouse/init:/docker-entrypoint-initdb.d:ro
+    networks:
+      - event_smash
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8123/ping || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+
+  # ----------------------------------------------------------
+  # HAZELCAST 5.x — Cache baseline OLAP per Flink hot path
+  #
+  # Ruolo: mirror in-memory delle baseline ClickHouse
+  #        Flink legge le baseline senza query dirette a ClickHouse
+  #        Nessun TTL — la cache si aggiorna ad ogni nuova baseline
+  #        da ClickHouse via CustomerBaselineUpdateFunction
+  #
+  # IMap: "customer-baseline-cache"
+  #       key = customer_id, value = CustomerBaseline (~1KB)
+  #       Dimensione stimata: 21M clienti × ~1KB ≈ ~20GB
+  #
+  # Accesso management: http://localhost:8081
+  # Cluster name: dev (allineato con HazelcastConfig.java)
+  # ARM64: hazelcast/hazelcast supporta ARM64 nativo
+  # ----------------------------------------------------------
+  hazelcast:
+    image: hazelcast/hazelcast:5.3
+    platform: linux/arm64
+    container_name: smash_hazelcast
+    restart: unless-stopped
+    ports:
+      - "5701:5701"    # Hazelcast member port
+      - "8081:8081"    # Management Center (se abilitato)
+    environment:
+      HZ_CLUSTERNAME: dev
+      JAVA_OPTS: >-
+        -Xms512m
+        -Xmx2g
+        -Dhazelcast.shutdownhook.policy=GRACEFUL
+    networks:
+      - event_smash
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 5701 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  # ----------------------------------------------------------
+  # FLINK JOBMANAGER
+  # Accesso: http://localhost:8080
+  # ----------------------------------------------------------
+  flink-jobmanager:
+    image: flink:1.19-scala_2.12-java17
+    platform: linux/arm64
+    container_name: smash_flink_jobmanager
+    restart: unless-stopped
+    command: jobmanager
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8080:8081"
+    environment:
+      HAZELCAST_ADDRESS: hazelcast:5701
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: flink-jobmanager
+        taskmanager.numberOfTaskSlots: 4
+        parallelism.default: 2
+        state.backend: rocksdb
+        state.backend.incremental: true
+        state.checkpoints.dir: file:///opt/flink/checkpoints
+        execution.checkpointing.interval: 30000
+        execution.checkpointing.mode: EXACTLY_ONCE
+        rest.bind-address: 0.0.0.0
+    volumes:
+      - flink_checkpoints:/opt/flink/checkpoints
+      - ./flink/jobs:/opt/flink/jobs
+      - ./flink/lib:/opt/flink/lib/custom
+    networks:
+      - event_smash
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8081/overview || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # ----------------------------------------------------------
+  # FLINK TASKMANAGER
+  # ----------------------------------------------------------
+  flink-taskmanager:
+    image: flink:1.19-scala_2.12-java17
+    platform: linux/arm64
+    container_name: smash_flink_taskmanager
+    restart: unless-stopped
+    command: taskmanager
+    depends_on:
+      flink-jobmanager:
+        condition: service_healthy
+    environment:
+      HAZELCAST_ADDRESS: hazelcast:5701
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: flink-jobmanager
+        taskmanager.numberOfTaskSlots: 4
+        taskmanager.memory.process.size: 4096m
+        taskmanager.memory.flink.size: 3072m
+        taskmanager.memory.network.min: 256mb
+        taskmanager.memory.network.max: 512mb
+        state.backend: rocksdb
+        state.backend.incremental: true
+        state.checkpoints.dir: file:///opt/flink/checkpoints
+    volumes:
+      - flink_checkpoints:/opt/flink/checkpoints
+      - ./flink/lib:/opt/flink/lib/custom
+    networks:
+      - event_smash
+
+  # ----------------------------------------------------------
+  # KAFKA CONNECT (Debezium)
+  # REST API: http://localhost:8083
+  # ----------------------------------------------------------
+  kafka-connect:
+    image: debezium/connect:2.7
+    platform: linux/arm64
+    container_name: smash_kafka_connect
+    restart: unless-stopped
+    depends_on:
+      kafka:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8083:8083"
+    environment:
+      BOOTSTRAP_SERVERS: kafka:29092
+      GROUP_ID: smash-connect-cluster
+      CONFIG_STORAGE_TOPIC: smash.connect.configs
+      OFFSET_STORAGE_TOPIC: smash.connect.offsets
+      STATUS_STORAGE_TOPIC: smash.connect.status
+      CONFIG_STORAGE_REPLICATION_FACTOR: 1
+      OFFSET_STORAGE_REPLICATION_FACTOR: 1
+      STATUS_STORAGE_REPLICATION_FACTOR: 1
+      CONNECT_KEY_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      CONNECT_KEY_CONVERTER_SCHEMAS_ENABLE: "false"
+      CONNECT_VALUE_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      CONNECT_VALUE_CONVERTER_SCHEMAS_ENABLE: "false"
+      CONNECT_PLUGIN_PATH: /kafka/connect
+    networks:
+      - event_smash
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8083/connectors || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+    volumes:
+      - ./volumes/kafka/smash-debezium-transforms-1.0-SNAPSHOT.jar:/kafka/connect/plugins/smash-transforms/smash-transforms.jar
+
+  # ----------------------------------------------------------
+  # SMASH BATCH — Job Python baseline OLAP → Kafka
+  #
+  # Ruolo: ogni 5 minuti legge daily_metrics FINAL
+  #        per i clienti modificati e pubblica su customer.baselines
+  #
+  # Sostituisce la MV ClickHouse mv_push_to_kafka — rimossa.
+  # Aggregati sempre corretti grazie a FINAL su query scheduled.
+  # ----------------------------------------------------------
+  smash-batch:
+    build:
+      context: ./smash-batch
+      dockerfile: Dockerfile
+    platform: linux/arm64
+    container_name: smash_batch
+    restart: unless-stopped
+    depends_on:
+      kafka:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+    environment:
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_PORT: 9000
+      CLICKHOUSE_DB: smash_olap
+      CLICKHOUSE_USER: smash_olap_user
+      CLICKHOUSE_PASSWORD: smash_olap_pwd
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      KAFKA_BASELINE_TOPIC: customer.baselines
+      JOB_INTERVAL_MINUTES: 5
+      COLD_START_THRESHOLD: 5
+    volumes:
+      - ./smash-batch/baseline_job.py:/app/baseline_job.py
+    networks:
+      - event_smash
+
+# ============================================================
+# VOLUMES
+# ============================================================
+volumes:
+  postgres_data:
+    driver: local
+  kafka_data:
+    driver: local
+  flink_checkpoints:
+    driver: local
+  clickhouse_data:
+    driver: local
+  clickhouse_cold:
+    driver: local
+
+# ============================================================
+# NETWORKS
+# ============================================================
+networks:
+  event_smash:
+    driver: bridge

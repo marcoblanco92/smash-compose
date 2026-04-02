@@ -1,0 +1,16 @@
+<clickhouse>
+    <profiles>
+        <smash_olap_user>
+            <async_insert>1</async_insert>
+            <wait_for_async_insert>0</wait_for_async_insert>
+            <async_insert_busy_timeout_ms>200</async_insert_busy_timeout_ms>
+            <async_insert_max_data_size>1000000</async_insert_max_data_size>
+        </smash_olap_user>
+    </profiles>
+
+    <users>
+        <smash_olap_user>
+            <profile>smash_olap_user</profile>
+        </smash_olap_user>
+    </users>
+</clickhouse>

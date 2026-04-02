@@ -1,0 +1,67 @@
+{
+  "name": "smash-cbs-connector",
+  "config": {
+    "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+    "tasks.max": "1",
+
+    "database.hostname": "smash_postgres",
+    "database.port": "5432",
+    "database.user": "smash_repl",
+    "database.password": "smash_repl",
+    "database.dbname": "smash",
+
+    "topic.prefix": "smash",
+    "schema.include.list": "smash_own",
+
+    "plugin.name": "pgoutput",
+    "publication.name": "smash_debezium",
+    "publication.autocreate.mode": "disabled",
+
+    "slot.name": "debezium_cbs",
+
+    "table.include.list": "smash_own.customers,smash_own.accounts,smash_own.transactions,smash_own.loans,smash.own.cards",
+
+    "key.converter": "org.apache.kafka.connect.json.JsonConverter",
+    "key.converter.schemas.enable": false,
+    "value.converter": "org.apache.kafka.connect.json.JsonConverter",
+    "value.converter.schemas.enable": false,
+
+    "snapshot.mode": "initial",
+
+    "heartbeat.interval.ms": "10000",
+    "tombstones.on.delete": true,
+
+    "decimal.handling.mode": "double",
+    "time.precision.mode": "connect",
+
+    "topic.creation.enable": true,
+    "topic.creation.default.replication.factor": 1,
+    "topic.creation.default.partitions": 12,
+
+    "topic.creation.high_volume.include": "smash\\.smash_own\\.transactions",
+    "topic.creation.high_volume.replication.factor": 1,
+    "topic.creation.high_volume.partitions": 24,
+
+    "transforms": "maskIban,maskTaxCode,maskCounterpart,maskCardNumber,dropPII",
+
+    "transforms.maskIban.type": "com.marbl.debezium.transforms.PseudonymizeField",
+    "transforms.maskIban.field": "iban",
+    "transforms.maskIban.secret": "smash-hmac-secret-key",
+
+    "transforms.maskTaxCode.type": "com.marbl.debezium.transforms.PseudonymizeField",
+    "transforms.maskTaxCode.field": "tax_code",
+    "transforms.maskTaxCode.secret": "smash-hmac-secret-key",
+
+    "transforms.maskCounterpart.type": "com.marbl.debezium.transforms.PseudonymizeField",
+    "transforms.maskCounterpart.field": "counterpart",
+    "transforms.maskCounterpart.secret": "smash-hmac-secret-key",
+
+    "transforms.dropPII.type": "com.marbl.debezium.transforms.DropNestedFields",
+    "transforms.dropPII.fields": "first_name,last_name,birth_date,birth_place,description",
+
+    "transforms.maskCardNumber.type": "com.marbl.debezium.transforms.PseudonymizeField",
+    "transforms.maskCardNumber.field": "card_number",
+    "transforms.maskCardNumber.secret": "smash-hmac-secret-key"
+
+  }
+}
