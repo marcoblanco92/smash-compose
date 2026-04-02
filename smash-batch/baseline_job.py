@@ -39,7 +39,7 @@ CLICKHOUSE_PASSWORD = os.getenv('CLICKHOUSE_PASSWORD', 'smash_olap_pwd')
 KAFKA_BOOTSTRAP     = os.getenv('KAFKA_BOOTSTRAP_SERVERS', 'kafka:29092')
 KAFKA_TOPIC         = os.getenv('KAFKA_BASELINE_TOPIC',    'customer.baselines')
 
-JOB_INTERVAL_MIN    = int(os.getenv('JOB_INTERVAL_MINUTES', '1'))
+JOB_INTERVAL_MIN    = int(os.getenv('JOB_INTERVAL_MINUTES', '5'))
 COLD_START_THRESHOLD = int(os.getenv('COLD_START_THRESHOLD', '5'))
 
 # ── Query ─────────────────────────────────────────────────────
@@ -105,6 +105,11 @@ SELECT
     -- Mappe qualitative 30d
     CAST(sumMapMergeIf(cat_amounts_state,   day >= today_it - 30), 'Map(String, Float64)') AS merchantCatAmounts30d,
     CAST(sumMapMergeIf(cat_counts_state,    day >= today_it - 30), 'Map(String, UInt32)')  AS merchantCatCounts30d,
+
+    -- Mappe qualitative 90d (per calcolo media storica per categoria)
+    CAST(sumMapMergeIf(cat_amounts_state,   day >= today_it - 90), 'Map(String, Float64)') AS merchantCatAmounts90d,
+    CAST(sumMapMergeIf(cat_counts_state,    day >= today_it - 90), 'Map(String, UInt32)')  AS merchantCatCounts90d,
+
     CAST(sumMapMergeIf(channel_counts_state,day >= today_it - 30), 'Map(String, UInt32)')  AS channelCounts30d,
     round(sumMergeIf(income_sum_state,      day >= today_it - 30), 2)                      AS estimatedMonthlyIncome,
     toUInt32(uniqMergeIf(counterparts_hll,  day >= today_it - 30))                         AS distinctCounterparts30d
@@ -163,6 +168,15 @@ def build_baseline_record(row: dict) -> dict:
         'w365StdDev':             row['w365StdDev'],
         'merchantCatAmounts30d':  dict(row['merchantCatAmounts30d']),
         'merchantCatCounts30d':   dict(row['merchantCatCounts30d']),
+
+        # Media per categoria su 90 giorni: catAmounts90d / catCounts90d
+        # Usata dal CEP per confronto "spesa categoria vs media storica"
+        'merchantCatAvgAmounts90d': {
+            cat: round(amt / row['merchantCatCounts90d'].get(cat, 1), 2)
+            for cat, amt in row['merchantCatAmounts90d'].items()
+            if row['merchantCatCounts90d'].get(cat, 0) > 0
+        },
+
         'channelCounts30d':       dict(row['channelCounts30d']),
         'estimatedMonthlyIncome': row['estimatedMonthlyIncome'],
         'distinctCounterparts30d':row['distinctCounterparts30d'],
