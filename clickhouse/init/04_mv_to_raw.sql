@@ -5,7 +5,7 @@ CREATE MATERIALIZED VIEW smash_olap.mv_to_raw
 SELECT
     JSONExtractString(raw_json, 'after', 'customer_id') as customer_id,
     JSONExtractString(raw_json, 'after', 'transaction_id') as transaction_id,
-    abs(JSONExtractFloat(raw_json, 'after', 'amount')) as amount,
+    JSONExtractFloat(raw_json, 'after', 'amount') as amount,
     JSONExtractString(raw_json, 'after', 'merchant_category') as merchant_cat,
     JSONExtractString(raw_json, 'after', 'channel') as channel,
     JSONExtractString(raw_json, 'after', 'counterpart') as counterpart_token,

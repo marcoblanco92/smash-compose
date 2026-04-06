@@ -339,7 +339,7 @@ services:
       CLICKHOUSE_PASSWORD: smash_olap_pwd
       KAFKA_BOOTSTRAP_SERVERS: kafka:29092
       KAFKA_BASELINE_TOPIC: customer.baselines
-      JOB_INTERVAL_MINUTES: 5
+      JOB_INTERVAL_MINUTES: 1
       COLD_START_THRESHOLD: 5
     volumes:
       - ./smash-batch/baseline_job.py:/app/baseline_job.py

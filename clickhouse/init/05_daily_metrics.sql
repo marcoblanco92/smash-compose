@@ -9,6 +9,7 @@ CREATE TABLE IF NOT EXISTS smash_olap.daily_metrics
     txn_max_state     AggregateFunction(max,        Float64),
     txn_avg_state     AggregateFunction(avg,        Float64),
     txn_stddev_state  AggregateFunction(stddevPop,  Float64),
+    txn_min_state     AggregateFunction(min, Float64),
 
     -- Distribuzione Categorie
     cat_amounts_state AggregateFunction(sumMap, Array(String), Array(Float64)),

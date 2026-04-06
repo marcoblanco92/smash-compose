@@ -1,19 +1,22 @@
-CREATE MATERIALIZED VIEW IF NOT EXISTS smash_olap.mv_to_daily
+CREATE
+MATERIALIZED VIEW IF NOT EXISTS smash_olap.mv_to_daily
             TO smash_olap.daily_metrics AS
-SELECT
-    JSONExtractString(raw_json, 'after', 'customer_id') AS customer_id,
-    toDate(substring(JSONExtractString(raw_json, 'after', 'transaction_date'), 1, 19), 'Europe/Rome') AS day,
+SELECT JSONExtractString(raw_json, 'after', 'customer_id') AS customer_id,
+       -- Parsing della data (assicurati che il formato sia compatibile)
+       toDate(substring(JSONExtractString(raw_json, 'after', 'transaction_date'), 1, 19), 'Europe/Rome') AS day,
 
-    sumState(abs(JSONExtractFloat(raw_json, 'after', 'amount')))        AS txn_sum_state,
-    countState(JSONExtractFloat(raw_json, 'after', 'amount'))           AS txn_count_state,
-    maxState(abs(JSONExtractFloat(raw_json, 'after', 'amount')))        AS txn_max_state,
-    avgState(abs(JSONExtractFloat(raw_json, 'after', 'amount')))        AS txn_avg_state,
-    stddevPopState(abs(JSONExtractFloat(raw_json, 'after', 'amount')))  AS txn_stddev_state,
+    -- Metriche base: MANTENIAMO IL SEGNO per saldo e medie reali
+    sumState(JSONExtractFloat(raw_json, 'after', 'amount'))        AS txn_sum_state,
+    countState(JSONExtractFloat(raw_json, 'after', 'amount'))      AS txn_count_state,
+    maxState(JSONExtractFloat(raw_json, 'after', 'amount'))        AS txn_max_state,
+    minState(JSONExtractFloat(raw_json, 'after','amount') )         AS txn_min_state,
+    avgState(JSONExtractFloat(raw_json, 'after', 'amount'))        AS txn_avg_state,
+    stddevPopState(JSONExtractFloat(raw_json, 'after', 'amount'))  AS txn_stddev_state,
 
-    -- Distribuzione categorie
+    -- Distribuzione categorie: Qui l'abs() ha senso (vogliamo sapere QUANTO abbiamo speso in 'grocery')
     sumMapState(
         [JSONExtractString(raw_json, 'after', 'merchant_category')],
-        [toFloat64(abs(JSONExtractFloat(raw_json, 'after', 'amount')))]
+        [abs(JSONExtractFloat(raw_json, 'after', 'amount'))] -- Valore assoluto per la spesa categoriale
     ) AS cat_amounts_state,
 
     sumMapState(
@@ -21,13 +24,13 @@ SELECT
         [toUInt64(1)]
     ) AS cat_counts_state,
 
-    -- Distribuzione canali (conteggio transazioni per canale)
+    -- Distribuzione canali
     sumMapState(
         [JSONExtractString(raw_json, 'after', 'channel')],
         [toUInt64(1)]
     ) AS channel_counts_state,
 
-    -- Income INBOUND: wire/instant con amount > 0
+    -- Income INBOUND: wire/instant con amount > 0 (già corretto, non serve abs)
     sumStateIf(
         JSONExtractFloat(raw_json, 'after', 'amount'),
         JSONExtractString(raw_json, 'after', 'channel') IN ('wire', 'instant')
