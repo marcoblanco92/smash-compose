@@ -10,17 +10,20 @@
 --   CRM       : 30000003-0000-0000-0000-000000000001
 --
 -- Condizioni (2 di 3):
---   ① hasFeatureNarrowing = true   (solo 'essential' ultimi 14gg)
+--   ① hasFeatureNarrowing = true   (solo 'essential' in featureCategoryDistribution)
 --   ② pushIgnoreStreak >= 3        (= 4)
 --   ③ sessionDrop > 30%            (175s vs baseline 320s → 45%)
 --
--- ⚠️  DIPENDENZA smash-batch: 4 transazioni ordinarie (entro 14gg) superano
---     COLD_START_THRESHOLD=5. Attendere ~5 min dopo l'esecuzione prima del trigger.
+-- FIX v2: app events storici ora tutti 'essential' — evita commercial
+--         che inquinava hasFeatureNarrowing() → commercial == 0 richiesto
+--
+-- ⚠️  DIPENDENZA smash-batch: attendere ~5 min dopo l'esecuzione prima del trigger.
 -- Output atteso: detectedPatterns: ["P-03-PHASE1"]
 -- ============================================================
 
 SET search_path TO smash_own;
 
+-- ── 1. CUSTOMER ───────────────────────────────────────────
 INSERT INTO smash_own.customers (
     customer_id, first_name, last_name, birth_date, birth_place, tax_code,
     segment, pattern_type, pattern_trigger_date, active_pattern,
@@ -34,6 +37,7 @@ INSERT INTO smash_own.customers (
              CURRENT_DATE - INTERVAL '3 years', TRUE
          );
 
+-- ── 2. ACCOUNT ────────────────────────────────────────────
 INSERT INTO smash_own.accounts (
     account_id, customer_id, account_type, iban, currency,
     current_balance, opened_date, status, overdraft_limit, updated_at
@@ -44,6 +48,7 @@ INSERT INTO smash_own.accounts (
              3200.00, CURRENT_DATE - INTERVAL '3 years', 'active', 0.00, NOW()
          );
 
+-- ── 3. CARD ───────────────────────────────────────────────
 INSERT INTO smash_own.cards (
     card_id, customer_id, account_id, card_type, card_number,
     plafond_limit, plafond_used, billing_cycle_day,
@@ -58,6 +63,7 @@ INSERT INTO smash_own.cards (
              CURRENT_DATE + INTERVAL '1 year', NOW()
          );
 
+-- ── 4. LOAN ──────────────────────────────────────────────
 -- Prestito personale piccolo — nessun segnale di stress
 INSERT INTO smash_own.loans (
     loan_id, customer_id, loan_type, principal_amount,
@@ -76,6 +82,7 @@ INSERT INTO smash_own.loans (
              'active', 'none', NOW()
          );
 
+-- ── 5. CRM PROFILE ───────────────────────────────────────
 -- push_ignore_streak=4 → ②   avg_session_duration_30d=320 → baseline ③
 INSERT INTO smash_own.crm_profiles (
     profile_id, customer_id, segment, products_held,
@@ -91,12 +98,16 @@ INSERT INTO smash_own.crm_profiles (
              '99000003-0000-0000-0000-000000000001'::uuid,
              CURRENT_DATE - INTERVAL '75 days',
              'app', TRUE,
-             320,  -- baseline sessione
+             320,  -- baseline sessione — usata da sessionDurationDeltaPct
              4,    -- ② push_ignore_streak >= 3 ✓
              75, 0.350, NOW()
          );
 
--- App events storici (> 14gg fa): sessioni lunghe, feature miste
+-- ── 6. APP EVENTS STORICI (> 14gg fa) ────────────────────
+-- FIX: tutti 'essential' con screen neutro — NON usare 'commercial'
+-- commercial > 0 rompe hasFeatureNarrowing() che richiede commercial == 0
+-- Scopo: popolare avgSessionDuration con sessioni lunghe (baseline)
+-- is_push_opened=TRUE sul primo → azzera pushIgnoreStreak, poi CRM lo riporta a 4
 INSERT INTO smash_own.app_events (
     event_id, customer_id, event_type, screen_name,
     session_id, session_duration_s, event_timestamp,
@@ -105,23 +116,24 @@ INSERT INTO smash_own.app_events (
 ) VALUES
       (gen_random_uuid(),
        '10000003-0000-0000-0000-000000000001'::uuid,
-       'screen_view', 'investimenti/fondi',
+       'screen_view', 'dashboard/home',
        gen_random_uuid(), 380, NOW() - INTERVAL '42 days',
-       'ios', TRUE, 'commercial', 6, FALSE),
+       'ios', FALSE, 'essential', 6, FALSE),   -- ← era commercial
 
       (gen_random_uuid(),
        '10000003-0000-0000-0000-000000000001'::uuid,
-       'screen_view', 'offerte/prodotti',
+       'screen_view', 'movimenti/lista',
        gen_random_uuid(), 340, NOW() - INTERVAL '35 days',
-       'ios', FALSE, 'commercial', 7, FALSE),
+       'ios', FALSE, 'essential', 7, FALSE),   -- ← era commercial
 
       (gen_random_uuid(),
        '10000003-0000-0000-0000-000000000001'::uuid,
        'screen_view', 'dashboard/home',
        gen_random_uuid(), 310, NOW() - INTERVAL '22 days',
-       'ios', FALSE, 'essential', 4, FALSE);
+       'ios', FALSE, 'essential', 4, FALSE);   -- già essential ✓
 
--- App events recenti (< 14gg): SOLO essential, sessioni corte → ① ③
+-- ── 7. APP EVENTS RECENTI (< 14gg) ───────────────────────
+-- SOLO essential, sessioni corte → ① hasFeatureNarrowing ③ sessionDrop
 INSERT INTO smash_own.app_events (
     event_id, customer_id, event_type, screen_name,
     session_id, session_duration_s, event_timestamp,
@@ -152,10 +164,9 @@ INSERT INTO smash_own.app_events (
        gen_random_uuid(), 190, NOW() - INTERVAL '3 days',
        'ios', FALSE, 'essential', 2, FALSE);
 
--- Transazioni ordinarie per cold start (entro TTL 14gg di transactions_raw)
--- Portano w365Count a 5 → sopra COLD_START_THRESHOLD=5 → isColdStart=0
--- NON disturbano la logica P-03 (sepa_dd/pos, nessun segnale churn)
--- L'ultima a NOW() garantisce che smash-batch veda il cliente al prossimo tick
+-- ── 8. TRANSAZIONI — cold start ──────────────────────────
+-- 4 transazioni ordinarie → w365Count >= 5 → isColdStart=false
+-- NON disturbano P-03 (sepa_dd/pos, nessun segnale churn)
 INSERT INTO smash_own.transactions (
     transaction_id, account_id, customer_id, amount, currency,
     merchant_category, channel, counterpart, card_id,
@@ -185,7 +196,7 @@ INSERT INTO smash_own.transactions (
        NOW() - INTERVAL '7 days', (NOW() - INTERVAL '7 days')::date,
        NULL, FALSE, 'ordinary_baseline'),
 
--- Trigger smash-batch — ingested_at=NOW() → smash-batch vede il cliente
+      -- Trigger smash-batch — ingested_at=NOW()
       (gen_random_uuid(),
        '20000003-0000-0000-0000-000000000001'::uuid,
        '10000003-0000-0000-0000-000000000001'::uuid,
@@ -194,7 +205,8 @@ INSERT INTO smash_own.transactions (
        NOW(), NOW()::date,
        NULL, FALSE, 'ordinary_baseline');
 
--- Transazione verso nuovo IBAN (segnale esplorativo pre-churn)
+-- ── 9. TRANSAZIONE PRE-CHURN ──────────────────────────────
+-- Bonifico verso IBAN mai visto — segnale esplorativo pre-churn
 INSERT INTO smash_own.transactions (
     transaction_id, account_id, customer_id, amount, currency,
     merchant_category, channel, counterpart, card_id,
@@ -209,7 +221,7 @@ INSERT INTO smash_own.transactions (
              NULL, FALSE, 'churn_emotional_distance'
          );
 
--- Market data: neutro — nessun contesto amplificante per churn
+-- ── 10. MARKET DATA ───────────────────────────────────────
 INSERT INTO smash_own.market_data (
     record_id, data_type, metric_name, value, previous_value,
     recorded_at, source
@@ -217,13 +229,18 @@ INSERT INTO smash_own.market_data (
     (gen_random_uuid(), 'ecb_rate', 'ecb_deposit_rate',
      3.25000, 3.25000, NOW() - INTERVAL '1 day', 'synthetic');
 
--- ⏱️  PAUSA ~5 MINUTI — aspetta smash-batch → isColdStart=0
--- Verifica: Kafka UI → customer.baselines → isColdStart=0 per questo cliente
--- Poi esegui il trigger qui sotto.
+-- ============================================================
+-- ⏱️  PAUSA ~5 MINUTI
+-- Aspetta smash-batch → isColdStart=false
+-- Verifica: Kafka UI → customer.baselines → coldStart=false
+-- Poi esegui il trigger sotto.
+-- ============================================================
 
--- Evento trigger → P-03-PHASE1
+-- ── 11. TRIGGER P-03-PHASE1 ──────────────────────────────
 -- session_duration=175s → drop 45.3% > 30% → ③
--- feature_category='essential' → contribuisce a hasFeatureNarrowing ①
+-- feature_category='essential' → hasFeatureNarrowing ① (commercial=0 ✓)
+-- pushIgnoreStreak=4 → ② (da CRM)
+-- Segnali attivi: ① + ② + ③ = 3/3 → P-03-PHASE1 scatta
 INSERT INTO smash_own.app_events (
     event_id, customer_id, event_type, screen_name,
     session_id, session_duration_s, event_timestamp,
@@ -252,9 +269,9 @@ GROUP BY feature_category ORDER BY ultima DESC;
 
 SELECT '① hasFeatureNarrowing' AS segnale,
        CASE WHEN (
-                     SELECT COUNT(DISTINCT feature_category) FROM smash_own.app_events
+                     SELECT COUNT(DISTINCT feature_category)
+                     FROM smash_own.app_events
                      WHERE customer_id = '10000003-0000-0000-0000-000000000001'::uuid
-                       AND event_timestamp >= NOW() - INTERVAL '14 days'
                  ) = 1 THEN '✓ ATTIVO' ELSE '✗ inattivo' END AS stato
 UNION ALL
 SELECT '② pushIgnoreStreak >= 3',

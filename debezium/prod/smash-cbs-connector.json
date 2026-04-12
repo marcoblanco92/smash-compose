@@ -57,7 +57,7 @@
     "transforms.maskCounterpart.secret": "smash-hmac-secret-key",
 
     "transforms.dropPII.type": "com.marbl.debezium.transforms.DropNestedFields",
-    "transforms.dropPII.fields": "first_name,last_name,birth_date,birth_place,description",
+    "transforms.dropPII.fields": "first_name,last_name,birth_date,birth_place",
 
     "transforms.maskCardNumber.type": "com.marbl.debezium.transforms.PseudonymizeField",
     "transforms.maskCardNumber.field": "card_number",

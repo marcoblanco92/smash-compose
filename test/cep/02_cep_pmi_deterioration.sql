@@ -338,15 +338,15 @@ INSERT INTO smash_own.transactions (
        NULL, FALSE, 'pmi_explicit_stress');
 
 -- Trigger B → P-02-PHASE2
--- INSERT INTO smash_own.transactions (
---     transaction_id, account_id, customer_id, amount, currency,
---     merchant_category, channel, counterpart, card_id,
---     transaction_date, value_date, description, is_recurring, pattern_phase
--- ) VALUES (gen_random_uuid(),
---        '20000002-0000-0000-0000-000000000002'::uuid,
---        '10000002-0000-0000-0000-000000000002'::uuid,
---        -2100.00, 'EUR', 'tax_payment', 'wire', 'IT00AGENZIAENTRATEF2401', NULL,
---        NOW(), CURRENT_DATE, NULL, FALSE, 'pmi_explicit_stress');
+INSERT INTO smash_own.transactions (
+    transaction_id, account_id, customer_id, amount, currency,
+    merchant_category, channel, counterpart, card_id,
+    transaction_date, value_date, description, is_recurring, pattern_phase
+) VALUES (gen_random_uuid(),
+       '20000002-0000-0000-0000-000000000002'::uuid,
+       '10000002-0000-0000-0000-000000000002'::uuid,
+       -2100.00, 'EUR', 'tax_payment', 'wire', 'IT00AGENZIAENTRATEF2401', NULL,
+       NOW(), CURRENT_DATE, NULL, FALSE, 'pmi_explicit_stress');
 
 -- ── MARKET DATA ───────────────────────────────────────────
 -- Contesto P-02: spread BTP-Bund in salita → stress PMI amplificato
